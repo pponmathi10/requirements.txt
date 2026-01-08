@@ -14,91 +14,73 @@ numpy
 git add requirements.txt
 git commit -m "Added requirements"
 git push
-import pandas as pd
-import joblib
-import os
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.model_selection import train_test_split
-from sklearn.linear_model import LogisticRegression
-
-MODEL_PATH = "model.pkl"
-VECTORIZER_PATH = "vectorizer.pkl"
-DATA_PATH = "/content/AI_Resume_Screening.csv"
-
-def preprocess_data():
-    df = pd.read_csv(DATA_PATH)
-
-    # Combine important columns into one text feature
-    df["resume_text"] = (
-        df["Skills"].fillna("") + " " +
-        df["Education"].fillna("") + " " +
-        df["Certifications"].fillna("") + " " +
-        df["Job Role"].fillna("")
-    )
-
-    X = df["resume_text"]
-    y = df["Recruiter Decision"]
-
-    return X, y
-
-def train_model():
-    X, y = preprocess_data()
-
-    vectorizer = TfidfVectorizer(
-        stop_words="english",
-        max_features=4000
-    )
-    X_vec = vectorizer.fit_transform(X)
-
-    model = LogisticRegression(max_iter=1000)
-    model.fit(X_vec, y)
-
-    joblib.dump(model, MODEL_PATH)
-    joblib.dump(vectorizer, VECTORIZER_PATH)
-
-def load_model():
-    if not os.path.exists(MODEL_PATH):
-        train_model()
-
-    model = joblib.load(MODEL_PATH)
-    vectorizer = joblib.load(VECTORIZER_PATH)
-    return model, vectorizer
-
 import streamlit as st
 import pandas as pd
-from model import load_model
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+import PyPDF2
+import re
 
-st.set_page_config(
-    page_title="Intelligent Resume Screening System",
-    layout="centered"
-)
+# Page Configuration
+st.set_page_config(page_title="AI Resume Screener", layout="wide")
 
-st.title("📄 Intelligent Resume Screening System")
-st.subheader("Using NLP and Machine Learning")
+def clean_text(text):
+    text = re.sub(r'\s+', ' ', text)  # Remove extra whitespace
+    text = re.sub(r'[^a-zA-Z0-9\s]', '', text)  # Remove special characters
+    return text.lower()
 
-model, vectorizer = load_model()
+def extract_text(file):
+    try:
+        pdf_reader = PyPDF2.PdfReader(file)
+        return " ".join([page.extract_text() for page in pdf_reader.pages if page.extract_text()])
+    except Exception as e:
+        return ""
 
-st.markdown("### 🔍 Enter Candidate Details")
+# UI Layout
+st.title("🤖 Intelligent Resume Screening System")
+st.markdown("Rank resumes based on Job Description similarity using NLP.")
 
-skills = st.text_input("Skills (comma separated)")
-education = st.selectbox(
-    "Education",
-    ["B.Sc", "B.Tech", "MBA", "M.Sc", "PhD"]
-)
-certifications = st.text_input("Certifications")
-job_role = st.text_input("Job Role Applied For")
+col1, col2 = st.columns(2)
 
-if st.button("🚀 Screen Resume"):
-    resume_text = skills + " " + education + " " + certifications + " " + job_role
+with col1:
+    jd = st.text_area("Step 1: Paste Job Description", height=300)
 
-    X = vectorizer.transform([resume_text])
-    prediction = model.predict(X)[0]
-    confidence = max(model.predict_proba(X)[0]) * 100
+with col2:
+    uploaded_files = st.file_uploader("Step 2: Upload Resumes (PDF)", type="pdf", accept_multiple_files=True)
 
-    st.markdown(f"## ✅ Decision: **{prediction}**")
-    st.markdown(f"### 📊 Confidence Score: **{confidence:.2f}%**")
-
-    if prediction == "Hire":
-        st.success("Candidate is suitable for the role 🎯")
+if st.button("Analyze & Rank"):
+    if jd and uploaded_files:
+        with st.spinner('Analyzing...'):
+            # Process JD
+            cleaned_jd = clean_text(jd)
+            
+            # Process Resumes
+            resumes = []
+            filenames = []
+            for file in uploaded_files:
+                text = extract_text(file)
+                if text:
+                    resumes.append(clean_text(text))
+                    filenames.append(file.name)
+            
+            if resumes:
+                # ML Pipeline: TF-IDF
+                vectorizer = TfidfVectorizer(stop_words='english')
+                all_texts = [cleaned_jd] + resumes
+                tfidf_matrix = vectorizer.fit_transform(all_texts)
+                
+                # Similarity Calculation
+                match_percentage = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:]).flatten()
+                
+                # Results Table
+                results = pd.DataFrame({
+                    "Candidate Name": filenames,
+                    "Match Score (%)": [round(s * 100, 2) for s in match_percentage]
+                }).sort_values(by="Match Score (%)", ascending=False)
+                
+                st.success("Analysis Complete!")
+                st.table(results)
+            else:
+                st.error("Could not extract text from the uploaded PDFs.")
     else:
-        st.error("Candidate does not meet the criteria ❌")
+        st.warning("Please provide both a Job Description and Resumes.")
